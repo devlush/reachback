@@ -95,7 +95,7 @@ if [[ -z ${rootdir} ]]; then
   rootdir="/var/tmp/basecamp"
 fi
 
-mkdir ${rootdir}
+mkdir -p ${rootdir}
 pushd ${rootdir} >/dev/null
 python <<EOT >/dev/null 2>&1 &
 import socket
