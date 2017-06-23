@@ -1,0 +1,132 @@
+#!/bin/bash
+
+ssh_cmd_remote() {
+  local readonly handle="$1"
+  local readonly target="$2"
+  local readonly cmd="$3"
+  ssh -S ${handle} ${target} ${cmd}
+}
+
+refine_list() {
+  cat - \
+    | awk 'NR >1 {print $2}' \
+    | awk -F':' '{print $2}' \
+    | tr -s '\n' \
+    | tr -s ' ' \
+    | while read line; do echo $((16#${line})); done \
+    | tr '\n' ' '
+}
+
+choose_port() {
+  local readonly handle="$1"
+  local readonly target="$2"
+
+  local busy_ports_remote
+  busy_ports_remote="$( \
+    ssh_cmd_remote $handle $target \
+      "cat $( \
+        ls -d /proc/net/* \
+          | grep '\(tcp\|tcp6\|udp\|udp6\)$' \
+          | tr '\n' ' '
+        )" \
+      | refine_list
+  )"
+
+  local busy_ports_local
+  busy_ports_local="$( \
+    cat $(ls -d /proc/net/* \
+      | grep '\(tcp\|tcp6\|udp\|udp6\)$' \
+      | tr '\n' ' ' ) \
+    | refine_list
+  )"
+
+  read local busy_ports <<<$( \
+    echo -n "$busy_ports_local $busy_ports_remote" \
+    | tr ' ' '\n' | sort -g | uniq
+  )
+
+  for port in $(shuf -i "50000-59999"); do
+    if [[ ! "${busy_ports[@]}" =~ "${port}" ]]; then
+      echo -n $port
+      return
+    fi
+  done
+}
+
+demolish_carrier() {
+  local readonly handle="$1"
+  local readonly target="$2"
+  local readonly muxdir="${handle%/*}"
+  ssh -O exit -S ${handle} ${target} >/dev/null 2>&1
+  rm -rf ${muxdir}
+}
+
+establish_carrier() {
+  local readonly target="$1"
+  mkdir -p ~/.ssh/basecamp
+  local readonly handle="$(mktemp -d -p ~/.ssh/basecamp mux.XXXXXXXX)/control"
+  ssh -f -N -T -n \
+    -o ControlMaster=yes \
+    -o ControlPersist=yes \
+    -o HostKeyAlgorithms=ssh-ed25519,ssh-rsa \
+    -o ServerAliveInterval=55 \
+    -S "${handle}" ${target} >/dev/null 2>&1
+  echo -n "${handle}"
+}
+
+dismantle_httpd() {
+  local readonly port="$1"
+  local pid
+  pid="$( ss -6tanpl "sport = :${port}" \
+    | grep -oE 'users:((.*,.*,.*))' \
+    | awk -F, '{ print $2 }' \
+    | awk -F= '{ print $2 }' )"
+  kill ${pid}
+}
+
+launch_httpd() {
+
+local handle="$1"
+local target="$2"
+local rootdir="$3"
+local listen="$(choose_port ${handle} ${target})"
+
+if [[ -z ${rootdir} ]]; then
+  rootdir="/var/tmp/basecamp"
+fi
+
+pushd ${rootdir} >/dev/null
+python <<EOT >/dev/null 2>&1 &
+import socket
+from BaseHTTPServer import HTTPServer
+from SimpleHTTPServer import SimpleHTTPRequestHandler
+
+class HTTPServerV6(HTTPServer):
+  address_family = socket.AF_INET6
+
+def main():
+  server = HTTPServerV6(('::', ${listen}), SimpleHTTPRequestHandler)
+  server.serve_forever()
+
+if __name__ == '__main__':
+  main()
+EOT
+popd >/dev/null 2>&1
+
+ssh -O forward -R ${listen}:localhost6:${listen} -S ${handle} ${target}
+echo -n ${listen}
+
+}
+
+# -----------------------------------------------
+
+target="$1"
+
+handle="$(establish_carrier ${target})"
+port="$(launch_httpd ${handle} ${target})"
+
+echo; echo "http://[::1]:${port}"; echo
+ssh -S ${handle} ${target}
+
+demolish_carrier ${handle} ${target}
+dismantle_httpd ${port}
