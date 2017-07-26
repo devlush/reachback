@@ -1,56 +1,85 @@
 #!/bin/bash
 
-ssh_cmd_remote() {
-  local readonly handle="$1"
-  local readonly target="$2"
-  local readonly cmd="$3"
-  ssh -S ${handle} ${target} ${cmd}
+err() {
+  echo "$@" 2>/dev/null
+  echo "[$(date +'%Y-%m-%dT%H:%M:%S%z')] basecamp::reachback § $@" 1>/dev/null
 }
 
-refine_list() {
-  cat - \
-    | awk 'NR >1 {print $2}' \
-    | awk -F':' '{print $2}' \
-    | tr -s '\n' \
-    | tr -s ' ' \
-    | while read line; do echo $((16#${line})); done \
-    | tr '\n' ' '
+# -----------------------------------------------
+
+check_port() {
+
+local readonly port="$1"
+
+python <<EOT >/dev/null 2>&1 &
+import socket
+
+def main():
+  try:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(('127.0.0.1', ${port}))
+    sock.listen(5)
+    sock.close()
+    sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    sock.bind(('::1', ${port}))
+    sock.listen(5)
+    sock.close()
+  except socket.error as e:
+    raise SystemExit(e.errno)
+
+if __name__ == '__main__':
+  main()
+EOT
+
+return "$?"
 }
 
-choose_port() {
-  local readonly handle="$1"
-  local readonly target="$2"
+choose_ports() {
+  declare -a vacant_ports
+  declare -a forbidden_ports
+  declare -a busy_ports
 
-  local busy_ports_remote
-  busy_ports_remote="$( \
-    ssh_cmd_remote $handle $target \
-      "cat $( \
-        ls -d /proc/net/* \
-          | grep '\(tcp\|tcp6\|udp\|udp6\)$' \
-          | tr '\n' ' '
-        )" \
-      | refine_list
-  )"
-
-  local busy_ports_local
-  busy_ports_local="$( \
-    cat $(ls -d /proc/net/* \
-      | grep '\(tcp\|tcp6\|udp\|udp6\)$' \
-      | tr '\n' ' ' ) \
-    | refine_list
-  )"
-
-  read local busy_ports <<<$( \
-    echo -n "$busy_ports_local $busy_ports_remote" \
-    | tr ' ' '\n' | sort -g | uniq
-  )
-
-  for port in $(shuf -i "50000-59999"); do
-    if [[ ! "${busy_ports[@]}" =~ "${port}" ]]; then
-      echo -n $port
-      return
+  local count=0
+  while [[ $count -lt 50 ]]; do
+    local port="$(( $RANDOM % 9999 + 50000 ))"
+    if [[ ! "${vacant_ports[@]}" =~ "${port}" ]]; then
+      let count+=1
+      check_port "${port}"
+      local rc="$?"
+      if [[ "${rc}" -eq 0 ]]; then
+        vacant_ports+=("${port}")
+      elif [[ "${rc}" -eq 13 ]]; then
+        forbidden_ports+=("${port}")
+      elif [[ "${rc}" -eq 48 ]]; then
+        busy_ports+=("${port}")
+      else
+        err "Internal Error"
+        exit 1
+      fi
     fi
   done
+
+  if [[ "${#vacant_ports[@]}" -gt 0 ]]; then
+    echo -n "${vacant_ports[@]}"
+    return
+  elif [[ "${#forbidden_ports[@]}" -gt 0 ]]; then
+    err "Unable to listen on local socket: Permission denied"
+    exit 13
+  elif [[ "${#busy_ports[@]}" -gt 0 ]]; then
+    err "Unable to listen on local socket: Port already in use"
+    exit 48
+  else
+    err "Internal Error"
+    exit 1
+  fi
+}
+
+purge_carrier_remnants() {
+  ps aux | grep -v grep | grep "M24GO57l6" >/dev/null 2>&1
+  local rc="$?"
+  if [[ ${rc} -ne 0 ]]; then
+    echo purge this session ...
+  fi
 }
 
 demolish_carrier() {
@@ -58,76 +87,71 @@ demolish_carrier() {
   local readonly target="$2"
   local readonly muxdir="${handle%/*}"
   ssh -O exit -S ${handle} ${target} >/dev/null 2>&1
-  rm -rf ${muxdir}
+  local rc="$?"
+  rm -rf "${muxdir}"
+  return "${rc}"
 }
 
 establish_carrier() {
   local readonly target="$1"
   mkdir -p ~/.ssh/basecamp
-  local readonly handle="$(mktemp -d -p ~/.ssh/basecamp mux.XXXXXXXX)/control"
+  local readonly handle="$(mktemp -d ~/.ssh/basecamp/mux.XXXXXXXXX)/control"
   ssh -f -N -T -n \
+    -o ConnectTimeout=7 \
     -o ControlMaster=yes \
     -o ControlPersist=yes \
     -o HostKeyAlgorithms=ssh-ed25519,ssh-rsa \
     -o ServerAliveInterval=55 \
     -S "${handle}" ${target} >/dev/null 2>&1
+  local rc="$?"
+  if [[ "${rc}" -ne 0 ]]; then
+    err "Unable to engage target host: ${target#*@}"
+    exit "${rc}"
+  fi
   echo -n "${handle}"
 }
 
 dismantle_httpd() {
-  local readonly port="$1"
-  local pid
-  pid="$( ss -6tanpl "sport = :${port}" \
-    | grep -oE 'users:((.*,.*,.*))' \
-    | awk -F, '{ print $2 }' \
-    | awk -F= '{ print $2 }' )"
-  kill ${pid}
+  pkill python
 }
 
 launch_httpd() {
+  local port="$1"
+  local rootdir="$2"
+  if [[ -z ${rootdir} ]]; then
+    rootdir="/var/tmp/basecamp"
+  fi
+  mkdir -p ${rootdir}
+  pushd ${rootdir} >/dev/null
+  python -m SimpleHTTPServer "${port}" &
+  popd >/dev/null
+  echo; echo "http://127.0.0.1:${port}"; echo
+}
 
-local handle="$1"
-local target="$2"
-local rootdir="$3"
-local listen="$(choose_port ${handle} ${target})"
+main() {
+  local readonly target="$1"
+  local readonly ports="$(choose_ports)"
+  local readonly handle="$(establish_carrier ${target})"
 
-if [[ -z ${rootdir} ]]; then
-  rootdir="/var/tmp/basecamp"
-fi
+  local chosen_port=0
+  for port in ${ports[@]}; do
+    ssh -O forward -R ${port}:localhost:${port} -S ${handle} ${target}
+    if [[ "$?" -eq 0 ]]; then
+      chosen_port="${port}"
+      break
+    fi
+  done
+  if [[ "${chosen_port}" -eq 0 ]]; then
+    err "Could not open socket on remote host"
+  fi
 
-mkdir -p ${rootdir}
-pushd ${rootdir} >/dev/null
-python <<EOT >/dev/null 2>&1 &
-import socket
-from BaseHTTPServer import HTTPServer
-from SimpleHTTPServer import SimpleHTTPRequestHandler
-
-class HTTPServerV6(HTTPServer):
-  address_family = socket.AF_INET6
-
-def main():
-  server = HTTPServerV6(('::', ${listen}), SimpleHTTPRequestHandler)
-  server.serve_forever()
-
-if __name__ == '__main__':
-  main()
-EOT
-popd >/dev/null 2>&1
-
-ssh -O forward -R ${listen}:localhost6:${listen} -S ${handle} ${target}
-echo -n ${listen}
+  launch_httpd ${chosen_port} ${handle}
+  ssh -S ${handle} ${target}
+  dismantle_httpd ${chosen_port} ${handle}
+  demolish_carrier ${handle} ${target}
 
 }
 
 # -----------------------------------------------
 
-target="$1"
-
-handle="$(establish_carrier ${target})"
-port="$(launch_httpd ${handle} ${target})"
-
-echo; echo "http://[::1]:${port}"; echo
-ssh -S ${handle} ${target}
-
-demolish_carrier ${handle} ${target}
-dismantle_httpd ${port}
+main "$@"
