@@ -7,6 +7,18 @@ err() {
 
 # -----------------------------------------------
 
+determine_ip_version() {
+  local readonly address="$1"
+  if [ "${address}" != "${1#*[0-9].[0-9]}" ]; then
+    echo -n 4
+  elif [ "${address}" != "${1#*:[0-9a-fA-F]}" ]; then
+    echo -n 6
+  else
+    echo "Unrecognized IP format '$1'" 1>/dev/null
+    return 1
+  fi
+}
+
 check_port() {
 
 local readonly port="$1"
@@ -111,31 +123,48 @@ establish_carrier() {
   echo -n "${handle}"
 }
 
-dismantle_httpd() {
-  pkill python
-}
-
 launch_httpd() {
-  local port="$1"
-  local rootdir="$2"
-  if [[ -z ${rootdir} ]]; then
-    rootdir="/var/tmp/basecamp"
-  fi
-  mkdir -p ${rootdir}
-  pushd ${rootdir} >/dev/null
-  python -m SimpleHTTPServer "${port}" &
-  popd >/dev/null
-  echo; echo "http://127.0.0.1:${port}"; echo
+local readonly port="$1"
+local readonly ip_ver="$2"
+local rootdir="$3"
+if [[ -z "${rootdir}" ]]; then
+  rootdir="/var/tmp/basecamp"
+fi
+mkdir -p ${rootdir}
+pushd ${rootdir} >/dev/null
+python <<EOT >/dev/null 2>&1 &
+import socket
+from BaseHTTPServer import HTTPServer
+from SimpleHTTPServer import SimpleHTTPRequestHandler
+class HTTPServerV6(HTTPServer):
+  address_family = socket.AF_INET6
+def main():
+  if ${ip_ver} == 4:
+    server = HTTPServer(('127.0.0.1', ${port}), SimpleHTTPRequestHandler)
+  else:
+    server = HTTPServerV6(('::', ${port}), SimpleHTTPRequestHandler)
+  server.serve_forever()
+if __name__ == '__main__':
+  main()
+EOT
+local readonly pid="$!"
+popd >/dev/null 2>&1
+echo -n "${pid}"
 }
 
 main() {
   local readonly target="$1"
   local readonly ports="$(choose_ports)"
   local readonly handle="$(establish_carrier ${target})"
+  local readonly ip_ver="$(determine_ip_version ${target#*@})"
 
+  case "${ip_ver}" in
+    4) local readonly listen_addr="127.0.0.1" ;;
+    6) local readonly listen_addr="[::1]" ;;
+  esac
   local chosen_port=0
   for port in ${ports[@]}; do
-    ssh -O forward -R ${port}:localhost:${port} -S ${handle} ${target}
+    ssh -O forward -R ${port}:${listen_addr}:${port} -S ${handle} ${target}
     if [[ "$?" -eq 0 ]]; then
       chosen_port="${port}"
       break
@@ -145,9 +174,11 @@ main() {
     err "Could not open socket on remote host"
   fi
 
-  launch_httpd ${chosen_port} ${handle}
+  local readonly httpd_pid="$(launch_httpd ${chosen_port} ${ip_ver})"
+  echo; echo; echo "http://${listen_addr}:${chosen_port}"; echo
+
   ssh -S ${handle} ${target}
-  dismantle_httpd ${chosen_port} ${handle}
+  kill "${httpd_pid}"
   demolish_carrier ${handle} ${target}
 
 }
