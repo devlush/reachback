@@ -133,17 +133,30 @@ fi
 mkdir -p ${rootdir}
 pushd ${rootdir} >/dev/null
 python <<EOT >/dev/null 2>&1 &
-import socket
+import socket, signal, sys
 from BaseHTTPServer import HTTPServer
 from SimpleHTTPServer import SimpleHTTPRequestHandler
+
 class HTTPServerV6(HTTPServer):
   address_family = socket.AF_INET6
+
 def main():
   if ${ip_ver} == 4:
     server = HTTPServer(('127.0.0.1', ${port}), SimpleHTTPRequestHandler)
   else:
     server = HTTPServerV6(('::', ${port}), SimpleHTTPRequestHandler)
+
+  def signal_handler(signal, frame):
+    # close the socket gracefully
+    server.shutdown(socket.SHUT_RDWR)
+    server.close()
+    sys.exit(0)
+
+  # register signal handler to handle kill signal from OS
+  signal.signal(signal.SIGTERM, signal_handler)
+
   server.serve_forever()
+
 if __name__ == '__main__':
   main()
 EOT
