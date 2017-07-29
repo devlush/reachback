@@ -7,6 +7,18 @@ err() {
 
 # -----------------------------------------------
 
+determine_ip_version() {
+  local readonly address="$1"
+  if [ "${address}" != "${1#*[0-9].[0-9]}" ]; then
+    echo -n "v4"
+  elif [ "${address}" != "${1#*:[0-9a-fA-F]}" ]; then
+    echo -n "v6"
+  else
+    echo "Unrecognized IP format '$1'" 1>/dev/null
+    return 1
+  fi
+}
+
 check_port() {
 
 local readonly port="$1"
@@ -132,10 +144,14 @@ main() {
   local readonly target="$1"
   local readonly ports="$(choose_ports)"
   local readonly handle="$(establish_carrier ${target})"
-
+  local readonly ip_version="$(determine_ip_version ${target#*@})"
+  case "${ip_version}" in
+    4) local readonly listen_addr="127.0.0.1"
+    6) local readonly listen_addr="[::1]"
+  esac
   local chosen_port=0
   for port in ${ports[@]}; do
-    ssh -O forward -R ${port}:localhost:${port} -S ${handle} ${target}
+    ssh -O forward -R ${port}:${listen_addr}:${port} -S ${handle} ${target}
     if [[ "$?" -eq 0 ]]; then
       chosen_port="${port}"
       break
@@ -145,8 +161,9 @@ main() {
     err "Could not open socket on remote host"
   fi
 
-  launch_httpd ${chosen_port} ${handle}
-  ssh -S ${handle} ${target}
+  launch_httpd ${listen_addr} ${chosen_port} ${handle}
+  ssh -S ${listen_addr} ${handle} ${target}
+
   dismantle_httpd ${chosen_port} ${handle}
   demolish_carrier ${handle} ${target}
 
