@@ -162,7 +162,7 @@ if __name__ == '__main__':
 EOT
 local readonly pid="$!"
 popd >/dev/null 2>&1
-echo -n "${pid}"
+echo -n "${pid} ${rootdir}"
 }
 
 main() {
@@ -172,23 +172,28 @@ main() {
   local readonly ip_ver="$(determine_ip_version ${target#*@})"
 
   case "${ip_ver}" in
-    4) local readonly listen_addr="127.0.0.1" ;;
-    6) local readonly listen_addr="[::1]" ;;
+    4) local readonly host="127.0.0.1" ;;
+    6) local readonly host="[::1]" ;;
   esac
-  local chosen_port=0
+  local local_port=0
   for port in ${ports[@]}; do
-    ssh -O forward -R ${port}:${listen_addr}:${port} -S ${handle} ${target}
+    local remote_port="$(ssh -O forward -R 0:${host}:${port} -S ${handle} ${target})"
     if [[ "$?" -eq 0 ]]; then
-      chosen_port="${port}"
+      local_port="${port}"
       break
     fi
   done
-  if [[ "${chosen_port}" -eq 0 ]]; then
-    err "Could not open socket on remote host"
+  if [[ "${local_port}" -eq 0 ]]; then
+    err "Could not open socket on localhost"
   fi
 
-  local readonly httpd_pid="$(launch_httpd ${chosen_port} ${ip_ver})"
-  echo; echo; echo "http://${listen_addr}:${chosen_port}"; echo
+  local httpd_pid
+  local httpd_rootdir
+  read httpd_pid httpd_rootdir <<< $(launch_httpd ${local_port} ${ip_ver})
+
+  echo; echo
+  echo "${httpd_rootdir} ~~~~~~ http://${host}:${remote_port}"
+  echo; echo
 
   ssh -S ${handle} ${target}
   kill "${httpd_pid}"
