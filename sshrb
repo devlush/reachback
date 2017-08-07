@@ -7,91 +7,113 @@ err() {
 
 # -----------------------------------------------
 
-determine_ip_version() {
-  local readonly address="$1"
-  if [ "${address}" != "${1#*[0-9].[0-9]}" ]; then
-    echo -n 4
-  elif [ "${address}" != "${1#*:[0-9a-fA-F]}" ]; then
-    echo -n 6
-  else
-    echo "Unrecognized IP format '$1'" 1>/dev/null
-    return 1
-  fi
-}
 
-check_port() {
+launch_httpd() {
 
-local readonly port="$1"
+local readonly addr="$1"
+local readonly port="$2"
+local readonly family="$3"
 
+local rootdir="$4"
+if [[ -z "${rootdir}" ]]; then
+  rootdir="/var/tmp/basecamp"
+fi
+mkdir -p ${rootdir}
+
+pushd ${rootdir} >/dev/null
 python <<EOT >/dev/null 2>&1 &
-import socket
+import socket, signal
+from BaseHTTPServer import HTTPServer
+from SimpleHTTPServer import SimpleHTTPRequestHandler
+
+class DerivativeServer(HTTPServer):
+  address_family = socket.AF_${family}
 
 def main():
   try:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(('127.0.0.1', ${port}))
-    sock.listen(5)
-    sock.close()
-    sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-    sock.bind(('::1', ${port}))
-    sock.listen(5)
-    sock.close()
+    httpd = DerivativeServer(('${addr}', ${port}), SimpleHTTPRequestHandler)
   except socket.error as e:
     raise SystemExit(e.errno)
+
+  def handler(signal, frame):   # terminate server upon SIGTERM (OS kill)
+    Thread(target = httpd.shutdown, args=()).start()
+
+  signal.signal(signal.SIGTERM, handler)  # register handler for OS kill
+  httpd.serve_forever()                  # start the server
 
 if __name__ == '__main__':
   main()
 EOT
+local readonly pid="$!"
+popd >/dev/null 2>&1
+echo -n "${pid} ${rootdir}"
 
-return "$?"
 }
 
 choose_ports() {
-  declare -a vacant_ports
-  declare -a forbidden_ports
-  declare -a busy_ports
 
-  local count=0
-  while [[ $count -lt 50 ]]; do
-    local port="$(( $RANDOM % 9999 + 50000 ))"
-    if [[ ! "${vacant_ports[@]}" =~ "${port}" ]]; then
-      let count+=1
-      check_port "${port}"
-      local rc="$?"
-      if [[ "${rc}" -eq 0 ]]; then
-        vacant_ports+=("${port}")
-      elif [[ "${rc}" -eq 13 ]]; then
-        forbidden_ports+=("${port}")
-      elif [[ "${rc}" -eq 48 ]]; then
-        busy_ports+=("${port}")
-      else
-        err "Internal Error"
-        exit 1
-      fi
-    fi
-  done
+local readonly addr="$1"
+local readonly family="$2"
 
-  if [[ "${#vacant_ports[@]}" -gt 0 ]]; then
-    echo -n "${vacant_ports[@]}"
-    return
-  elif [[ "${#forbidden_ports[@]}" -gt 0 ]]; then
-    err "Unable to listen on local socket: Permission denied"
-    exit 13
-  elif [[ "${#busy_ports[@]}" -gt 0 ]]; then
-    err "Unable to listen on local socket: Port already in use"
-    exit 48
-  else
-    err "Internal Error"
-    exit 1
-  fi
-}
+vacant_ports=$(python - "${addr}" "socket.AF_${family}" <<'EOT'
+import errno, socket, sys
+from random import SystemRandom
 
-purge_carrier_remnants() {
-  ps aux | grep -v grep | grep "M24GO57l6" >/dev/null 2>&1
-  local rc="$?"
-  if [[ ${rc} -ne 0 ]]; then
-    echo purge this session ...
-  fi
+def main():
+
+    addr = sys.argv[1]
+    family = eval(sys.argv[2])
+
+    ports = []
+    busy_ports = []
+    vacant_ports = []
+    forbidden_ports = []
+
+    ctr = 0
+    while ctr < 20:
+        port = SystemRandom().randint(50000,59999)
+        if port not in ports:
+            ports.append(port)
+            ctr += 1
+
+    for port in ports:
+        try:
+            sock = socket.socket(family, socket.SOCK_STREAM)
+            sock.bind((addr, port))
+            sock.listen(5)
+            sock.close()
+        except socket.error as e:
+            if e.errno is errno.EADDRINUSE:
+                busy_ports.append(port)
+            elif e.errno is errno.EACCES:
+                forbidden_ports.append(port)
+            else:
+                raise SystemExit(e.errno)
+        vacant_ports.append(port)
+
+    if len(vacant_ports) > 0:
+        print ' '.join(str(port) for port in vacant_ports)
+    elif len(busy_ports) >= len(forbidden_ports):
+        raise SystemExit(errno.EADDRINUSE)
+    elif len(forbidden_ports) > len(busy_ports):
+        raise SystemExit(errno.EACCES)
+
+if __name__ == '__main__':
+    main()
+EOT
+)
+
+echo -n "${vacant_ports}"
+
+#  Return Code Legend:
+#
+#  Code           Unix  Linux  Meaning
+#  EACCES         13    13     Permission denied
+#  EAFNOSUPPORT   47    97     Address family not supported
+#  EADDRINUSE     48    98     Address already in use
+#  EADDRNOTAVAIL  49    99     Can't assign requested address
+#
+
 }
 
 demolish_carrier() {
@@ -123,58 +145,28 @@ establish_carrier() {
   echo -n "${handle}"
 }
 
-launch_httpd() {
-local readonly port="$1"
-local readonly ip_ver="$2"
-local rootdir="$3"
-if [[ -z "${rootdir}" ]]; then
-  rootdir="/var/tmp/basecamp"
-fi
-mkdir -p ${rootdir}
-pushd ${rootdir} >/dev/null
-python <<EOT >/dev/null 2>&1 &
-import socket, signal, sys
-from BaseHTTPServer import HTTPServer
-from SimpleHTTPServer import SimpleHTTPRequestHandler
-
-class HTTPServerV6(HTTPServer):
-  address_family = socket.AF_INET6
-
-def main():
-  if ${ip_ver} == 4:
-    server = HTTPServer(('127.0.0.1', ${port}), SimpleHTTPRequestHandler)
-  else:
-    server = HTTPServerV6(('::', ${port}), SimpleHTTPRequestHandler)
-
-  def signal_handler(signal, frame):
-    # close the socket gracefully
-    server.shutdown(socket.SHUT_RDWR)
-    server.close()
-    sys.exit(0)
-
-  # register signal handler to handle kill signal from OS
-  signal.signal(signal.SIGTERM, signal_handler)
-
-  server.serve_forever()
-
-if __name__ == '__main__':
-  main()
-EOT
-local readonly pid="$!"
-popd >/dev/null 2>&1
-echo -n "${pid} ${rootdir}"
-}
-
 main() {
-  local readonly target="$1"
-  local readonly ports="$(choose_ports)"
-  local readonly handle="$(establish_carrier ${target})"
-  local readonly ip_ver="$(determine_ip_version ${target#*@})"
 
-  case "${ip_ver}" in
-    4) local readonly host="127.0.0.1" ;;
-    6) local readonly host="[::1]" ;;
-  esac
+  local family
+  local ports="$(choose_ports '::1' 'INET6')"
+  if [[ "$?" -eq 0 ]]; then
+    family='INET6'
+    host='[::1]'
+    addr='::1'
+  else
+    ports="$(choose_ports '127.0.0.1' 'INET')"
+    if [[ "$?" -eq 0 ]]; then
+      family='INET'
+      host='127.0.0.1'
+      addr='127.0.0.1'
+    else
+      exit "${rc}"
+    fi
+  fi
+
+  local readonly target="$1"
+  local readonly handle="$(establish_carrier ${target})"
+
   local local_port=0
   for port in ${ports[@]}; do
     local remote_port="$(ssh -O forward -R 0:${host}:${port} -S ${handle} ${target})"
@@ -189,7 +181,8 @@ main() {
 
   local httpd_pid
   local httpd_rootdir
-  read httpd_pid httpd_rootdir <<< $(launch_httpd ${local_port} ${ip_ver})
+  read httpd_pid httpd_rootdir <<< $(launch_httpd ${addr} ${local_port} ${family})
+
 
   echo; echo
   echo "${httpd_rootdir} ~~~~~~ http://${host}:${remote_port}"
@@ -204,3 +197,4 @@ main() {
 # -----------------------------------------------
 
 main "$@"
+
