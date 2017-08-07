@@ -182,7 +182,7 @@ launch_session() {
   read httpd_pid httpd_rootdir <<< $(launch_httpd ${local_addr} ${local_port} ${family})
 
   echo; echo
-  echo "${httpd_rootdir} ~~~~~~ http://${host}:${remote_port}"
+  echo "${httpd_rootdir} ~~~~~~ http://localhost:${remote_port}"
   echo; echo
 
   ssh -S ${handle} ${target}
