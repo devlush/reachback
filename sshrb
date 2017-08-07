@@ -19,31 +19,32 @@ if [[ -z "${rootdir}" ]]; then
   rootdir="/var/tmp/basecamp"
 fi
 mkdir -p ${rootdir}
-
 pushd ${rootdir} >/dev/null
+
 python <<EOT >/dev/null 2>&1 &
 import socket, signal
 from BaseHTTPServer import HTTPServer
 from SimpleHTTPServer import SimpleHTTPRequestHandler
 
 class DerivativeServer(HTTPServer):
-  address_family = socket.AF_${family}
+    address_family = socket.AF_${family}
 
 def main():
-  try:
-    httpd = DerivativeServer(('${addr}', ${port}), SimpleHTTPRequestHandler)
-  except socket.error as e:
-    raise SystemExit(e.errno)
+    try:
+        httpd = DerivativeServer(('${addr}', ${port}), SimpleHTTPRequestHandler)
+    except socket.error as e:
+        raise SystemExit(e.errno)
 
-  def handler(signal, frame):   # terminate server upon SIGTERM (OS kill)
-    Thread(target = httpd.shutdown, args=()).start()
+    def handler(signal, frame):   # terminate server upon SIGTERM (OS kill)
+        Thread(target = httpd.shutdown, args=()).start()
 
-  signal.signal(signal.SIGTERM, handler)  # register handler for OS kill
-  httpd.serve_forever()                  # start the server
+    signal.signal(signal.SIGTERM, handler)  # register handler for OS kill
+    httpd.serve_forever()                  # start the server
 
 if __name__ == '__main__':
   main()
 EOT
+
 local readonly pid="$!"
 popd >/dev/null 2>&1
 echo -n "${pid} ${rootdir}"
@@ -102,7 +103,6 @@ if __name__ == '__main__':
     main()
 EOT
 )
-
 echo -n "${vacant_ports}"
 
 #  Return Code Legend:
@@ -145,27 +145,24 @@ establish_carrier() {
   echo -n "${handle}"
 }
 
-main() {
+launch_session() {
 
-  local family
-  local ports="$(choose_ports '::1' 'INET6')"
-  if [[ "$?" -eq 0 ]]; then
-    family='INET6'
-    host='[::1]'
-    addr='::1'
+  local readonly local_addr="$1"
+  local readonly family="$2"
+  local readonly handle="$3"
+  local readonly target="$4"
+
+  if [[ "${family}" == "INET6" ]]; then
+    local readonly host="[${local_addr}]"
   else
-    ports="$(choose_ports '127.0.0.1' 'INET')"
-    if [[ "$?" -eq 0 ]]; then
-      family='INET'
-      host='127.0.0.1'
-      addr='127.0.0.1'
-    else
-      exit "${rc}"
-    fi
+    local readonly host="${local_addr}"
   fi
 
-  local readonly target="$1"
-  local readonly handle="$(establish_carrier ${target})"
+  local readonly ports="$(choose_ports ${local_addr} ${family})"
+  local rc="$?"
+  if [[ "${rc}" -ne 0 ]]; then
+    return "${rc}"
+  fi
 
   local local_port=0
   for port in ${ports[@]}; do
@@ -176,13 +173,13 @@ main() {
     fi
   done
   if [[ "${local_port}" -eq 0 ]]; then
-    err "Could not open socket on localhost"
+    err "Could not open socket: ${local_addr} ${family}"
+    return 1
   fi
 
   local httpd_pid
   local httpd_rootdir
-  read httpd_pid httpd_rootdir <<< $(launch_httpd ${addr} ${local_port} ${family})
-
+  read httpd_pid httpd_rootdir <<< $(launch_httpd ${local_addr} ${local_port} ${family})
 
   echo; echo
   echo "${httpd_rootdir} ~~~~~~ http://${host}:${remote_port}"
@@ -190,11 +187,27 @@ main() {
 
   ssh -S ${handle} ${target}
   kill "${httpd_pid}"
-  demolish_carrier ${handle} ${target}
+
+}
+
+
+main() {
+
+  local readonly target="$1"
+  local readonly handle="$(establish_carrier ${target})"
+
+  launch_session '::1' 'INET6' "${handle}" "${target}"
+  local rc="$?"
+  if [[ "${rc}" -ne 0 ]]; then
+    launch_session '127.0.0.1' 'INET' "${handle}" "${target}"
+    local rc="$?"
+  fi
+
+  demolish_carrier "${handle}" "${target}"
+  exit "${rc}"
 
 }
 
 # -----------------------------------------------
 
 main "$@"
-
