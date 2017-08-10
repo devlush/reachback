@@ -2,14 +2,14 @@
 # SSH Reachback
 
 ### Motivation
-Allow an application or user to access files on the source host without a lot of extra commands.  Http protocol would be nice because it's ubiquitous in nature and many userland applications use it.  Additionally, the web server and its traffic should be transported inside the ssh tunnel and only accessible from the remote host.
-A concept called ssh carrier (ControlMaster) is proposed to provide flexibility and portability for different deployment scenarios.
+Allow access from a remote host to files on the origin host without a lot of extra commands.  Http protocol would be nice because of its ubiquitous nature and simplicity.  Additionally, the web server traffic should be transported inside an ssh tunnel and accessible only from the remote host.
+A concept using ssh control master sockets is proposed for flexibility and portability across different deployment scenarios.
 
 ### Behavior
-A single directory on the origin host is made accessible via http through a reverse ssh tunnel.  When _sshrb_ is invoked, a small python web server started on the origin host and binds to a randomly selected port.  An ssh tunnel is established which forwards traffic from an arbitrarily selected port on the remote host to the randomly selected port where the web server is listening.  Now, user applications on the remote host can access the web server running from the origin host.
-Upon exiting the ssh session, _sshrb_ terminates the web server and tears down the ssh tunnel
+A single directory on the origin host is made accessible via http through a reverse ssh tunnel.  When _sshrb_ is invoked, a small python web server started on the origin host binds to a randomly selected port.  An ssh tunnel is established which forwards traffic from an arbitrarily selected port on the remote host to the randomly selected port on which the web server is listening.  Now user applications on the remote host can securely access the web server running on the origin host.
+Upon exiting the ssh session, _sshrb_ terminates the web server and tears down the ssh tunnel.
 
-![](docs/reachback.png)
+![](https://github.com/devlush/reachback/raw/master/docs/reachback.png)
 
 ### Usage
 
