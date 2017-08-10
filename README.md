@@ -12,7 +12,7 @@ Upon exiting the ssh session, _sshrb_ terminates the web server and tears down t
 
 ### Usage
 
-```bash
+```
 [titus@origin ~]$ ./sshrb titus@remote.lemmaplex.org
 
 /var/tmp/basecamp ~~~~~~ http://localhost:54937
@@ -22,6 +22,23 @@ Upon exiting the ssh session, _sshrb_ terminates the web server and tears down t
 ```
 
 ### Features
+- doesn't require root permissions
+- syntax is interoperable with ssh
 - arbitrarily chooses an open port for http on the origin host
 - attempts IPv6 first, then falls back to IPv4
-- syntax is interoperable with ssh
+
+
+### Synopsis
+You can manually reproduce _sshrb_ behavior:
+```
+[titus@origin ~]$ echo "Hello World!" > ./index.html
+[titus@origin ~]$ python -m SimpleHTTPServer 8080 &
+[titus@origin ~]$ ssh -R 0:localhost:8080 titus@remote.lemmaplex.org
+54937
+
+[titus@remote ~]$ wget http://localhost:54937
+[titus@remote ~]$ exit
+
+[titus@origin ~]$ pkill python
+```
+_Note: This method causes python to listen on all interfaces_
