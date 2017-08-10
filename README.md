@@ -29,7 +29,7 @@ Upon exiting the ssh session, _sshrb_ terminates the web server and tears down t
 
 
 ### Synopsis
-You can manually reproduce _sshrb_ behavior:
+You can manually replicate _sshrb_ behavior:
 ```
 [titus@origin ~]$ echo "Hello World!" > ./index.html
 [titus@origin ~]$ python -m SimpleHTTPServer 8080 &
