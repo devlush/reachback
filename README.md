@@ -9,9 +9,7 @@ A concept called ssh carrier (ControlMaster) is proposed to provide flexibility 
 A single directory on the origin host is made accessible through a reverse ssh tunnel on the remote host.  When _sshrb_ is invoked, a small python web server starts up on a randomly chosen vacant port on the origin host.  An ssh tunnel is established which forwards an arbitrarily chosen port on the remote host back to the port on which the web server listens.  Now, user applications on the remote host have access to the web server running from the origin host.
 Upon exiting the ssh session, _sshrb_ terminates the web server and tears down the ssh tunnel
 
-
-![](https://github.com/devlush/markdown-here/raw/master/docs/reachback.png "example scenario")
-
+<img src="https://raw.githubusercontent.com/devlush/reachback/master/docs/reachback.png"/>
 
 ### Usage
 
