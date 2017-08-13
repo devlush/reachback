@@ -26,9 +26,9 @@ Upon exiting the ssh session, _sshrb_ terminates the web server and tears down t
 - syntax is interoperable with ssh
 - arbitrarily chooses an open port for http on the origin host
 - attempts IPv6 first, then falls back to IPv4
-- graceful handling of tunnel teardown and web server termination
+- graceful session cleanup
 
-### Synopsis
+### Precedent
 You can manually replicate _sshrb_ behavior:
 ```
 [titus@origin ~]$ echo "Hello World!" > ./index.html
